@@ -540,8 +540,7 @@ static unsigned int ospf_nexthop_calculation(struct ospf_area *area,
 
 		if (IS_DEBUG_OSPF_EVENT) {
 			zlog_debug(
-				"%s: considering link:%s "
-				"type:%d link_id:%s link_data:%s",
+				"%s: considering link:%s type:%d link_id:%s link_data:%s",
 				__func__, oi->ifp->name, l->m[0].type,
 				inet_ntop(AF_INET, &l->link_id, buf1, BUFSIZ),
 				inet_ntop(AF_INET, &l->link_data, buf2,
@@ -676,8 +675,7 @@ static unsigned int ospf_nexthop_calculation(struct ospf_area *area,
 					return 1;
 				} else
 					zlog_info(
-						"ospf_nexthop_calculation(): "
-						"vl_data for VL link not found");
+						"ospf_nexthop_calculation(): vl_data for VL link not found");
 			} /* end virtual-link from V to W */
 			return 0;
 		} /* end W is a Router vertex */
@@ -1183,8 +1181,7 @@ static void ospf_spf_calculate(struct ospf *ospf, struct ospf_area *area,
 	if (!area->router_lsa_self) {
 		if (IS_DEBUG_OSPF_EVENT)
 			zlog_debug(
-				"ospf_spf_calculate: "
-				"Skip area %s's calculation due to empty router_lsa_self",
+				"ospf_spf_calculate: Skip area %s's calculation due to empty router_lsa_self",
 				inet_ntoa(area->area_id));
 		return;
 	}
@@ -1345,7 +1342,7 @@ static int ospf_spf_calculate_timer(struct thread *thread)
 	if (IS_DEBUG_OSPF_EVENT)
 		zlog_debug(
 			"%s: ospf install new route, vrf %s id %u new_table count %lu",
-			__PRETTY_FUNCTION__, ospf_vrf_id_to_name(ospf->vrf_id),
+			__func__, ospf_vrf_id_to_name(ospf->vrf_id),
 			ospf->vrf_id, new_table->count);
 	/* Update routing table. */
 	monotime(&start_time);
@@ -1369,7 +1366,7 @@ static int ospf_spf_calculate_timer(struct thread *thread)
 	abr_time = monotime_since(&start_time, NULL);
 
 	/* Schedule Segment Routing update */
-	ospf_sr_update_timer_add(ospf);
+	ospf_sr_update_task(ospf);
 
 	total_spf_time =
 		monotime_since(&spf_start_time, &ospf->ts_spf_duration);
@@ -1401,13 +1398,13 @@ static int ospf_spf_calculate_timer(struct thread *thread)
 
 	if (IS_DEBUG_OSPF_EVENT) {
 		zlog_info("SPF Processing Time(usecs): %ld", total_spf_time);
-		zlog_info("\t    SPF Time: %ld", spf_time);
-		zlog_info("\t   InterArea: %ld", ia_time);
-		zlog_info("\t       Prune: %ld", prune_time);
-		zlog_info("\tRouteInstall: %ld", rt_time);
+		zlog_info("            SPF Time: %ld", spf_time);
+		zlog_info("           InterArea: %ld", ia_time);
+		zlog_info("               Prune: %ld", prune_time);
+		zlog_info("        RouteInstall: %ld", rt_time);
 		if (IS_OSPF_ABR(ospf))
-			zlog_info("\t         ABR: %ld (%d areas)", abr_time,
-				  areas_processed);
+			zlog_info("                 ABR: %ld (%d areas)",
+				  abr_time, areas_processed);
 		zlog_info("Reason(s) for SPF: %s", rbuf);
 	}
 

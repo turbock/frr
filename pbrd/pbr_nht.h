@@ -24,6 +24,7 @@
 #include <lib/nexthop_group.h>
 
 #include "pbr_map.h"
+#include "json.h"
 
 #define PBR_NHC_NAMELEN PBR_MAP_NAMELEN + 10
 
@@ -88,7 +89,8 @@ extern struct pbr_nexthop_group_cache *pbr_nht_add_group(const char *name);
 extern void pbr_nht_change_group(const char *name);
 extern void pbr_nht_delete_group(const char *name);
 
-extern void pbr_nht_add_individual_nexthop(struct pbr_map_sequence *pbrms);
+extern void pbr_nht_add_individual_nexthop(struct pbr_map_sequence *pbrms,
+					   const struct nexthop *nhop);
 extern void pbr_nht_delete_individual_nexthop(struct pbr_map_sequence *pbrms);
 /*
  * Given the tableid of the installed default
@@ -111,6 +113,7 @@ extern char *pbr_nht_nexthop_make_name(char *name, size_t l, uint32_t seqno,
 				       char *buffer);
 
 extern void pbr_nht_show_nexthop_group(struct vty *vty, const char *name);
+extern void pbr_nht_json_nexthop_group(json_object *j, const char *name);
 
 /*
  * When we get a callback from zebra about a nexthop changing

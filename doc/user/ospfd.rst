@@ -177,8 +177,8 @@ To start OSPF process you have to specify the OSPF router.
    OSPF (:ref:`redistribute-routes-to-ospf`). This is the only way to
    advertise non-OSPF links into stub areas.
 
-.. index:: timers throttle spf DELAY INITIAL-HOLDTIME MAX-HOLDTIME
-.. clicmd:: timers throttle spf DELAY INITIAL-HOLDTIME MAX-HOLDTIME
+.. index:: timers throttle spf (0-600000) (0-600000) (0-600000)
+.. clicmd:: timers throttle spf (0-600000) (0-600000) (0-600000)
 
 .. index:: no timers throttle spf
 .. clicmd:: no timers throttle spf
@@ -662,6 +662,12 @@ Interfaces
 .. index:: ip ospf network (broadcast|non-broadcast|point-to-multipoint|point-to-point)
 .. clicmd:: ip ospf network (broadcast|non-broadcast|point-to-multipoint|point-to-point)
 
+   When configuring a point-to-point network on an interface and the interface
+   has a /32 address associated with then OSPF will treat the interface
+   as being `unnumbered`.  If you are doing this you *must* set the
+   net.ipv4.conf.<interface name>.rp_filter value to 0.  In order for
+   the ospf multicast packets to be delivered by the kernel.
+
 .. index:: no ip ospf network
 .. clicmd:: no ip ospf network
 
@@ -687,11 +693,11 @@ Interfaces
    retransmitting Database Description and Link State Request packets. The
    default value is 5 seconds.
 
-.. index:: ip ospf transmit-delay
-.. clicmd:: ip ospf transmit-delay
+.. index:: ip ospf transmit-delay (1-65535) [A.B.C.D]
+.. clicmd:: ip ospf transmit-delay (1-65535) [A.B.C.D]
 
-.. index:: no ip ospf transmit-delay
-.. clicmd:: no ip ospf transmit-delay
+.. index:: no ip ospf transmit-delay [(1-65535)] [A.B.C.D]
+.. clicmd:: no ip ospf transmit-delay [(1-65535)] [A.B.C.D]
 
    Set number of seconds for InfTransDelay value. LSAs' age should be
    incremented by this value when transmitting. The default value is 1 second.
@@ -703,6 +709,18 @@ Interfaces
 .. clicmd:: no ip ospf area
 
    Enable ospf on an interface and set associated area.
+
+OSPF route-map
+==============
+
+Usage of *ospfd*'s route-map support.
+
+.. index:: set metric [+|-](0-4294967295)
+.. clicmd:: set metric [+|-](0-4294967295)
+
+   Set a metric for matched route when sending announcement. Use plus (+) sign
+   to add a metric value to an existing metric. Use minus (-) sign to
+   substract a metric value from an existing metric.
 
 .. _redistribute-routes-to-ospf:
 

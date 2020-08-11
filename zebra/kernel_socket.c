@@ -556,7 +556,7 @@ int ifm_read(struct if_msghdr *ifm)
 	 * is 12 bytes larger than the 32 bit version.
 	 */
 	if (((struct sockaddr *)cp)->sa_family == AF_UNSPEC)
-		cp = cp + 12;
+		cp += 12;
 #endif
 
 	/* Look up for RTA_IFP and skip others. */
@@ -712,8 +712,7 @@ int ifm_read(struct if_msghdr *ifm)
 	{
 		if (ifp->ifindex != ifm->ifm_index) {
 			zlog_debug(
-				"%s: index mismatch, ifname %s, ifp index %d, "
-				"ifm index %d",
+				"%s: index mismatch, ifname %s, ifp index %d, ifm index %d",
 				__func__, ifp->name, ifp->ifindex,
 				ifm->ifm_index);
 			return -1;
@@ -833,9 +832,7 @@ static void ifam_read_mesg(struct ifa_msghdr *ifm, union sockunion *addr,
 					? ip_masklen(mask->sin.sin_addr)
 					: ip6_masklen(mask->sin6.sin6_addr);
 			zlog_debug(
-				"%s: ifindex %d, ifname %s, ifam_addrs {%s}, "
-				"ifam_flags 0x%x, addr %s/%d broad %s dst %s "
-				"gateway %s",
+				"%s: ifindex %d, ifname %s, ifam_addrs {%s}, ifam_flags 0x%x, addr %s/%d broad %s dst %s gateway %s",
 				__func__, ifm->ifam_index,
 				(ifnlen ? ifname : "(nil)"),
 				rtatostr(ifm->ifam_addrs, fbuf, sizeof(fbuf)),
@@ -978,8 +975,7 @@ static int rtm_read_mesg(struct rt_msghdr *rtm, union sockunion *dest,
 	/* rt_msghdr version check. */
 	if (rtm->rtm_version != RTM_VERSION)
 		flog_warn(EC_ZEBRA_RTM_VERSION_MISMATCH,
-			  "Routing message version different %d should be %d."
-			  "This may cause problem\n",
+			  "Routing message version different %d should be %d.This may cause problem\n",
 			  rtm->rtm_version, RTM_VERSION);
 
 	/* Be sure structure is cleared */
@@ -1371,7 +1367,7 @@ static int kernel_read(struct thread *thread)
 	/* Fetch routing socket. */
 	sock = THREAD_FD(thread);
 
-	nbytes = read(sock, &buf, sizeof buf);
+	nbytes = read(sock, &buf, sizeof(buf));
 
 	if (nbytes <= 0) {
 		if (nbytes < 0 && errno != EWOULDBLOCK && errno != EAGAIN)
@@ -1393,7 +1389,7 @@ static int kernel_read(struct thread *thread)
 	 */
 	if (rtm->rtm_msglen != nbytes) {
 		zlog_debug(
-			"kernel_read: rtm->rtm_msglen %d, nbytes %d, type %d\n",
+			"kernel_read: rtm->rtm_msglen %d, nbytes %d, type %d",
 			rtm->rtm_msglen, nbytes, rtm->rtm_type);
 		return -1;
 	}

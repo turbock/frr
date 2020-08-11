@@ -35,6 +35,7 @@
 #include "vrf.h"
 #include "libfrr.h"
 #include "routemap.h"
+#include "routing_nb.h"
 
 #include "zebra/zebra_router.h"
 #include "zebra/zebra_errors.h"
@@ -53,6 +54,10 @@
 #include "zebra/zebra_rnh.h"
 #include "zebra/zebra_pbr.h"
 #include "zebra/zebra_vxlan.h"
+#include "zebra/zebra_routemap.h"
+#include "zebra/zebra_nb.h"
+#include "zebra/zebra_opaque.h"
+#include "zebra/zebra_srte.h"
 
 #if defined(HANDLE_NETLINK_FUZZING)
 #include "zebra/kernel_netlink.h"
@@ -149,13 +154,24 @@ static void sigint(void)
 
 	frr_early_fini();
 
+	/* Stop the opaque module pthread */
+	zebra_opaque_stop();
+
 	zebra_dplane_pre_finish();
 
+	/* Clean up GR related info. */
+	zebra_gr_stale_client_cleanup(zrouter.stale_client_list);
+	list_delete_all_node(zrouter.stale_client_list);
+
+	/* Clean up zapi clients and server module */
 	for (ALL_LIST_ELEMENTS(zrouter.client_list, ln, nn, client))
 		zserv_close_client(client);
 
 	zserv_close();
 	list_delete_all_node(zrouter.client_list);
+
+	/* Once all the zclients are cleaned up, clean up the opaque module */
+	zebra_opaque_finish();
 
 	zebra_ptm_finish();
 
@@ -169,13 +185,20 @@ static void sigint(void)
 		work_queue_free_and_null(&zrouter.lsp_process_q);
 
 	vrf_terminate();
+	rtadv_terminate();
 
 	ns_walk_func(zebra_ns_early_shutdown);
 	zebra_ns_notify_close();
 
 	access_list_reset();
 	prefix_list_reset();
-	route_map_finish();
+	/*
+	 * zebra_routemap_finish will
+	 * 1 set rmap upd timer to 0 so that rmap update wont be scheduled again
+	 * 2 Put off the rmap update thread
+	 * 3 route_map_finish
+	 */
+	zebra_routemap_finish();
 
 	list_delete(&zrouter.client_list);
 
@@ -232,15 +255,19 @@ struct quagga_signal_t zebra_signals[] = {
 };
 
 static const struct frr_yang_module_info *const zebra_yang_modules[] = {
+	&frr_filter_info,
 	&frr_interface_info,
+	&frr_route_map_info,
+	&frr_zebra_info,
+	&frr_vrf_info,
+	&frr_routing_info,
 };
 
 FRR_DAEMON_INFO(
 	zebra, ZEBRA, .vty_port = ZEBRA_VTY_PORT, .flags = FRR_NO_ZCLIENT,
 
 	.proghelp =
-		"Daemon which manages kernel routing table management "
-		"and\nredistribution between different routing protocols.",
+		"Daemon which manages kernel routing table management and\nredistribution between different routing protocols.",
 
 	.signals = zebra_signals, .n_signals = array_size(zebra_signals),
 
@@ -317,17 +344,21 @@ int main(int argc, char **argv)
 		case 'a':
 			allow_delete = 1;
 			break;
-		case 'e':
-			zrouter.multipath_num = atoi(optarg);
-			if (zrouter.multipath_num > MULTIPATH_NUM
-			    || zrouter.multipath_num <= 0) {
+		case 'e': {
+			unsigned long int parsed_multipath =
+				strtoul(optarg, NULL, 10);
+			if (parsed_multipath == 0
+			    || parsed_multipath > MULTIPATH_NUM
+			    || parsed_multipath > UINT32_MAX) {
 				flog_err(
 					EC_ZEBRA_BAD_MULTIPATH_NUM,
-					"Multipath Number specified must be less than %d and greater than 0",
+					"Multipath Number specified must be less than %u and greater than 0",
 					MULTIPATH_NUM);
 				return 1;
 			}
+			zrouter.multipath_num = parsed_multipath;
 			break;
+		}
 		case 'o':
 			vrf_default_name_configured = optarg;
 			break;
@@ -386,12 +417,12 @@ int main(int argc, char **argv)
 	rib_init();
 	zebra_if_init();
 	zebra_debug_init();
-	router_id_cmd_init();
 
 	/*
 	 * Initialize NS( and implicitly the VRF module), and make kernel
 	 * routing socket. */
 	zebra_ns_init((const char *)vrf_default_name_configured);
+	router_id_cmd_init();
 	zebra_vty_init();
 	access_list_init();
 	prefix_list_init();
@@ -407,9 +438,11 @@ int main(int argc, char **argv)
 	zebra_mpls_vty_init();
 	zebra_pw_vty_init();
 	zebra_pbr_init();
+	zebra_opaque_init();
+	zebra_srte_init();
 
-/* For debug purpose. */
-/* SET_FLAG (zebra_debug_event, ZEBRA_DEBUG_EVENT); */
+	/* For debug purpose. */
+	/* SET_FLAG (zebra_debug_event, ZEBRA_DEBUG_EVENT); */
 
 	/* Process the configuration file. Among other configuration
 	*  directives we can meet those installing static routes. Such
@@ -437,6 +470,9 @@ int main(int argc, char **argv)
 
 	/* Start dataplane system */
 	zebra_dplane_start();
+
+	/* Start the ted module, before zserv */
+	zebra_opaque_start();
 
 	/* Start Zebra API server */
 	zserv_start(zserv_path);

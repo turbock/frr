@@ -185,6 +185,11 @@ static bool vrrp_ifp_has_vrrp_mac(struct interface *ifp)
  * is used to look up any existing instances that match the interface. It does
  * not matter whether the instance is already bound to the interface or not.
  *
+ * Note that the interface linkages must be correct for this to work. In other
+ * words, the macvlan must have a valid VRRP MAC, and its link_ifindex must be
+ * be equal to the ifindex of another interface in the interface RB trees (its
+ * parent). If these conditions aren't satisfied we won't find the VR.
+ *
  * mvl_ifp
  *    Interface pointer to use to lookup. Should be a macvlan device.
  *
@@ -406,9 +411,10 @@ static bool vrrp_has_ip(struct vrrp_vrouter *vr, struct ipaddr *ip)
 	return false;
 }
 
-int vrrp_add_ip(struct vrrp_router *r, struct ipaddr *ip)
+int vrrp_add_ip(struct vrrp_vrouter *vr, struct ipaddr *ip)
 {
-	int af = (ip->ipa_type == IPADDR_V6) ? AF_INET6 : AF_INET;
+	struct vrrp_router *r = IS_IPADDR_V4(ip) ? vr->v4 : vr->v6;
+	int af = r->family;
 
 	assert(r->family == af);
 	assert(!(r->vr->version == 2 && ip->ipa_type == IPADDR_V6));
@@ -452,7 +458,7 @@ int vrrp_add_ipv4(struct vrrp_vrouter *vr, struct in_addr v4)
 
 	ip.ipa_type = IPADDR_V4;
 	ip.ipaddr_v4 = v4;
-	return vrrp_add_ip(vr->v4, &ip);
+	return vrrp_add_ip(vr, &ip);
 }
 
 int vrrp_add_ipv6(struct vrrp_vrouter *vr, struct in6_addr v6)
@@ -463,14 +469,16 @@ int vrrp_add_ipv6(struct vrrp_vrouter *vr, struct in6_addr v6)
 
 	ip.ipa_type = IPADDR_V6;
 	ip.ipaddr_v6 = v6;
-	return vrrp_add_ip(vr->v6, &ip);
+	return vrrp_add_ip(vr, &ip);
 }
 
-int vrrp_del_ip(struct vrrp_router *r, struct ipaddr *ip)
+int vrrp_del_ip(struct vrrp_vrouter *vr, struct ipaddr *ip)
 {
 	struct listnode *ln, *nn;
 	struct ipaddr *iter;
 	int ret = 0;
+
+	struct vrrp_router *r = IS_IPADDR_V4(ip) ? vr->v4 : vr->v6;
 
 	if (!vrrp_has_ip(r->vr, ip))
 		return 0;
@@ -497,7 +505,7 @@ int vrrp_del_ipv6(struct vrrp_vrouter *vr, struct in6_addr v6)
 
 	ip.ipa_type = IPADDR_V6;
 	ip.ipaddr_v6 = v6;
-	return vrrp_del_ip(vr->v6, &ip);
+	return vrrp_del_ip(vr, &ip);
 }
 
 int vrrp_del_ipv4(struct vrrp_vrouter *vr, struct in_addr v4)
@@ -506,7 +514,7 @@ int vrrp_del_ipv4(struct vrrp_vrouter *vr, struct in_addr v4)
 
 	ip.ipa_type = IPADDR_V4;
 	ip.ipaddr_v4 = v4;
-	return vrrp_del_ip(vr->v4, &ip);
+	return vrrp_del_ip(vr, &ip);
 }
 
 
@@ -659,12 +667,12 @@ void vrrp_vrouter_destroy(struct vrrp_vrouter *vr)
 	XFREE(MTYPE_VRRP_RTR, vr);
 }
 
-struct vrrp_vrouter *vrrp_lookup(struct interface *ifp, uint8_t vrid)
+struct vrrp_vrouter *vrrp_lookup(const struct interface *ifp, uint8_t vrid)
 {
 	struct vrrp_vrouter vr;
 
 	vr.vrid = vrid;
-	vr.ifp = ifp;
+	vr.ifp = (struct interface *)ifp;
 
 	return hash_lookup(vrrp_vrouters_hash, &vr);
 }
@@ -859,8 +867,7 @@ static int vrrp_recv_advertisement(struct vrrp_router *r, struct ipaddr *src,
 	if (pkt->hdr.vrid != r->vr->vrid) {
 		DEBUGD(&vrrp_dbg_proto,
 		       VRRP_LOGPFX VRRP_LOGPFX_VRID VRRP_LOGPFX_FAM
-		       "Datagram invalid: Advertisement contains VRID %" PRIu8
-		       " which does not match our instance",
+		       "Datagram invalid: Advertisement contains VRID %hhu which does not match our instance",
 		       r->vr->vrid, family2str(r->family), pkt->hdr.vrid);
 		return -1;
 	}
@@ -880,8 +887,7 @@ static int vrrp_recv_advertisement(struct vrrp_router *r, struct ipaddr *src,
 	if (r->vr->version == 2 && !adveq) {
 		DEBUGD(&vrrp_dbg_proto,
 		       VRRP_LOGPFX VRRP_LOGPFX_VRID VRRP_LOGPFX_FAM
-		       "Datagram invalid: Received advertisement with advertisement interval %" PRIu8
-		       " unequal to our configured value %u",
+		       "Datagram invalid: Received advertisement with advertisement interval %hhu unequal to our configured value %u",
 		       r->vr->vrid, family2str(r->family),
 		       pkt->hdr.v2.adver_int,
 		       MAX(r->vr->advertisement_interval / 100, 1));
@@ -893,8 +899,7 @@ static int vrrp_recv_advertisement(struct vrrp_router *r, struct ipaddr *src,
 	if (pkt->hdr.naddr != r->addrs->count)
 		DEBUGD(&vrrp_dbg_proto,
 		       VRRP_LOGPFX VRRP_LOGPFX_VRID VRRP_LOGPFX_FAM
-		       "Datagram has %" PRIu8
-		       " addresses, but this VRRP instance has %u",
+		       "Datagram has %hhu addresses, but this VRRP instance has %u",
 		       r->vr->vrid, family2str(r->family), pkt->hdr.naddr,
 		       r->addrs->count);
 
@@ -918,8 +923,7 @@ static int vrrp_recv_advertisement(struct vrrp_router *r, struct ipaddr *src,
 			       && addrcmp > 0)) {
 			zlog_info(
 				VRRP_LOGPFX VRRP_LOGPFX_VRID VRRP_LOGPFX_FAM
-				"Received advertisement from %s w/ priority %" PRIu8
-				"; switching to Backup",
+				"Received advertisement from %s w/ priority %hhu; switching to Backup",
 				r->vr->vrid, family2str(r->family), sipstr,
 				pkt->hdr.priority);
 			THREAD_OFF(r->t_adver_timer);
@@ -938,8 +942,7 @@ static int vrrp_recv_advertisement(struct vrrp_router *r, struct ipaddr *src,
 			/* Discard advertisement */
 			DEBUGD(&vrrp_dbg_proto,
 			       VRRP_LOGPFX VRRP_LOGPFX_VRID VRRP_LOGPFX_FAM
-			       "Discarding advertisement from %s (%" PRIu8
-			       " <= %" PRIu8 " & %s <= %s)",
+			       "Discarding advertisement from %s (%hhu <= %hhu & %s <= %s)",
 			       r->vr->vrid, family2str(r->family), sipstr,
 			       pkt->hdr.priority, r->priority, sipstr, dipstr);
 		}
@@ -950,7 +953,7 @@ static int vrrp_recv_advertisement(struct vrrp_router *r, struct ipaddr *src,
 			thread_add_timer_msec(
 				master, vrrp_master_down_timer_expire, r,
 				r->skew_time * CS2MS, &r->t_master_down_timer);
-		} else if (r->vr->preempt_mode == false
+		} else if (!r->vr->preempt_mode
 			   || pkt->hdr.priority >= r->priority) {
 			if (r->vr->version == 3) {
 				r->master_adver_interval =
@@ -962,13 +965,12 @@ static int vrrp_recv_advertisement(struct vrrp_router *r, struct ipaddr *src,
 					      vrrp_master_down_timer_expire, r,
 					      r->master_down_interval * CS2MS,
 					      &r->t_master_down_timer);
-		} else if (r->vr->preempt_mode == true
+		} else if (r->vr->preempt_mode
 			   && pkt->hdr.priority < r->priority) {
 			/* Discard advertisement */
 			DEBUGD(&vrrp_dbg_proto,
 			       VRRP_LOGPFX VRRP_LOGPFX_VRID VRRP_LOGPFX_FAM
-			       "Discarding advertisement from %s (%" PRIu8
-			       " < %" PRIu8 " & preempt = true)",
+			       "Discarding advertisement from %s (%hhu < %hhu & preempt = true)",
 			       r->vr->vrid, family2str(r->family), sipstr,
 			       pkt->hdr.priority, r->priority);
 		}
@@ -1445,7 +1447,7 @@ static void vrrp_change_state_initialize(struct vrrp_router *r)
 	r->ndisc_pending = false;
 
 	/* Disable ND Router Advertisements */
-	if (r->family == AF_INET6)
+	if (r->family == AF_INET6 && r->mvl_ifp)
 		vrrp_zebra_radv_set(r, false);
 }
 
@@ -1643,7 +1645,7 @@ static int vrrp_shutdown(struct vrrp_router *r)
 		       r->vr->vrid, family2str(r->family),
 		       vrrp_event_names[VRRP_EVENT_SHUTDOWN],
 		       vrrp_state_names[VRRP_STATE_INITIALIZE]);
-		break;
+		return 0;
 	}
 
 	/* Cancel all timers */
@@ -1653,7 +1655,8 @@ static int vrrp_shutdown(struct vrrp_router *r)
 	THREAD_OFF(r->t_write);
 
 	/* Protodown macvlan */
-	vrrp_zclient_send_interface_protodown(r->mvl_ifp, true);
+	if (r->mvl_ifp)
+		vrrp_zclient_send_interface_protodown(r->mvl_ifp, true);
 
 	/* Throw away our source address */
 	memset(&r->src, 0x00, sizeof(r->src));
@@ -1830,7 +1833,7 @@ static int vrrp_autoconfig_if_add(struct interface *ifp)
 		created = true;
 	}
 
-	if (!vr || vr->autoconf == false)
+	if (!vr || !vr->autoconf)
 		return 0;
 
 	if (!created) {
@@ -2210,18 +2213,57 @@ void vrrp_if_del(struct interface *ifp)
 {
 	struct listnode *ln;
 	struct vrrp_vrouter *vr;
-	struct list *vrs = vrrp_lookup_by_if_any(ifp);
 
 	vrrp_if_down(ifp);
 
+	/*
+	 * You think we'd be able use vrrp_lookup_by_if_any to find interfaces?
+	 * Nah. FRR's interface management is insane. There are no ordering
+	 * guarantees about what interfaces are deleted when. Maybe this is a
+	 * macvlan and its parent was already deleted, in which case its
+	 * ifindex is now IFINDEX_INTERNAL, so ifp->link_ifindex - while still
+	 * valid - doesn't match any interface on the system, meaning we can't
+	 * use any of the vrrp_lookup* functions since they rely on finding the
+	 * base interface of what they're given by following link_ifindex.
+	 *
+	 * Since we need to actually NULL out pointers in this function to
+	 * avoid a UAF - since the caller will (might) free ifp after we return
+	 * - we need to look up based on pointers.
+	 */
+	struct list *vrs = hash_to_list(vrrp_vrouters_hash);
+
 	for (ALL_LIST_ELEMENTS_RO(vrs, ln, vr)) {
-		if ((vr->v4->mvl_ifp == ifp || vr->ifp == ifp)
-		    && vr->v4->fsm.state != VRRP_STATE_INITIALIZE) {
+		if (ifp == vr->ifp) {
 			vrrp_event(vr->v4, VRRP_EVENT_SHUTDOWN);
-			vr->v4->mvl_ifp = NULL;
-		} else if ((vr->v6->mvl_ifp == ifp || vr->ifp == ifp)
-			   && vr->v6->fsm.state != VRRP_STATE_INITIALIZE) {
 			vrrp_event(vr->v6, VRRP_EVENT_SHUTDOWN);
+			/*
+			 * Stands to reason if the base was deleted, so were
+			 * (or will be) its children
+			 */
+			vr->v4->mvl_ifp = NULL;
+			vr->v6->mvl_ifp = NULL;
+			/*
+			 * We shouldn't need to lose the reference if it's the
+			 * primary interface, because that was configured
+			 * explicitly in our config, and thus will be kept as a
+			 * stub; to avoid stupid bugs, double check that
+			 */
+			assert(ifp->configured);
+		} else if (ifp == vr->v4->mvl_ifp) {
+			vrrp_event(vr->v4, VRRP_EVENT_SHUTDOWN);
+			/*
+			 * If this is a macvlan, then it wasn't explicitly
+			 * configured and will be deleted when we return from
+			 * this function, so we need to lose the reference
+			 */
+			vr->v4->mvl_ifp = NULL;
+		} else if (ifp == vr->v6->mvl_ifp) {
+			vrrp_event(vr->v6, VRRP_EVENT_SHUTDOWN);
+			/*
+			 * If this is a macvlan, then it wasn't explicitly
+			 * configured and will be deleted when we return from
+			 * this function, so we need to lose the reference
+			 */
 			vr->v6->mvl_ifp = NULL;
 		}
 	}
@@ -2295,71 +2337,6 @@ void vrrp_if_address_del(struct interface *ifp)
 
 /* Other ------------------------------------------------------------------- */
 
-int vrrp_config_write_interface(struct vty *vty)
-{
-	struct list *vrs = hash_to_list(vrrp_vrouters_hash);
-	struct listnode *ln, *ipln;
-	struct vrrp_vrouter *vr;
-	int writes = 0;
-
-	for (ALL_LIST_ELEMENTS_RO(vrs, ln, vr)) {
-		vty_frame(vty, "interface %s\n", vr->ifp->name);
-		++writes;
-
-		vty_out(vty, " vrrp %" PRIu8 "%s\n", vr->vrid,
-			vr->version == 2 ? " version 2" : "");
-		++writes;
-
-		if (vr->shutdown != vd.shutdown && ++writes)
-			vty_out(vty, " %svrrp %" PRIu8 " shutdown\n",
-				vr->shutdown ? "" : "no ", vr->vrid);
-
-		if (vr->preempt_mode != vd.preempt_mode && ++writes)
-			vty_out(vty, " %svrrp %" PRIu8 " preempt\n",
-				vr->preempt_mode ? "" : "no ", vr->vrid);
-
-		if (vr->accept_mode != vd.accept_mode && ++writes)
-			vty_out(vty, " %svrrp %" PRIu8 " accept\n",
-				vr->accept_mode ? "" : "no ", vr->vrid);
-
-		if (vr->advertisement_interval != vd.advertisement_interval
-		    && ++writes)
-			vty_out(vty,
-				" vrrp %" PRIu8
-				" advertisement-interval %d\n",
-				vr->vrid, vr->advertisement_interval * CS2MS);
-
-		if (vr->priority != vd.priority && ++writes)
-			vty_out(vty, " vrrp %" PRIu8 " priority %" PRIu8 "\n",
-				vr->vrid, vr->priority);
-
-		struct ipaddr *ip;
-
-		for (ALL_LIST_ELEMENTS_RO(vr->v4->addrs, ipln, ip)) {
-			char ipbuf[INET6_ADDRSTRLEN];
-
-			ipaddr2str(ip, ipbuf, sizeof(ipbuf));
-			vty_out(vty, " vrrp %" PRIu8 " ip %s\n", vr->vrid,
-				ipbuf);
-			++writes;
-		}
-
-		for (ALL_LIST_ELEMENTS_RO(vr->v6->addrs, ipln, ip)) {
-			char ipbuf[INET6_ADDRSTRLEN];
-
-			ipaddr2str(ip, ipbuf, sizeof(ipbuf));
-			vty_out(vty, " vrrp %" PRIu8 " ipv6 %s\n", vr->vrid,
-				ipbuf);
-			++writes;
-		}
-		vty_endframe(vty, "!\n");
-	}
-
-	list_delete(&vrs);
-
-	return writes;
-}
-
 int vrrp_config_write_global(struct vty *vty)
 {
 	unsigned int writes = 0;
@@ -2368,12 +2345,13 @@ int vrrp_config_write_global(struct vty *vty)
 		vty_out(vty, "vrrp autoconfigure%s\n",
 			vrrp_autoconfig_version == 2 ? " version 2" : "");
 
+	/* FIXME: needs to be udpated for full YANG conversion. */
 	if (vd.priority != VRRP_DEFAULT_PRIORITY && ++writes)
-		vty_out(vty, "vrrp default priority %" PRIu8 "\n", vd.priority);
+		vty_out(vty, "vrrp default priority %hhu\n", vd.priority);
 
 	if (vd.advertisement_interval != VRRP_DEFAULT_ADVINT && ++writes)
 		vty_out(vty,
-			"vrrp default advertisement-interval %" PRIu16 "\n",
+			"vrrp default advertisement-interval %u\n",
 			vd.advertisement_interval * CS2MS);
 
 	if (vd.preempt_mode != VRRP_DEFAULT_PREEMPT && ++writes)
@@ -2396,7 +2374,7 @@ static unsigned int vrrp_hash_key(const void *arg)
 	const struct vrrp_vrouter *vr = arg;
 	char key[IFNAMSIZ + 64];
 
-	snprintf(key, sizeof(key), "%s@%" PRIu8, vr->ifp->name, vr->vrid);
+	snprintf(key, sizeof(key), "%s@%u", vr->ifp->name, vr->vrid);
 
 	return string_hash_make(key);
 }
@@ -2407,20 +2385,23 @@ static bool vrrp_hash_cmp(const void *arg1, const void *arg2)
 	const struct vrrp_vrouter *vr2 = arg2;
 
 	if (vr1->ifp != vr2->ifp)
-		return 0;
+		return false;
 	if (vr1->vrid != vr2->vrid)
-		return 0;
+		return false;
 
-	return 1;
+	return true;
 }
 
 void vrrp_init(void)
 {
 	/* Set default defaults */
-	vd.priority = VRRP_DEFAULT_PRIORITY;
-	vd.advertisement_interval = VRRP_DEFAULT_ADVINT;
-	vd.preempt_mode = VRRP_DEFAULT_PREEMPT;
-	vd.accept_mode = VRRP_DEFAULT_ACCEPT;
+	vd.version = yang_get_default_uint8("%s/version", VRRP_XPATH_FULL);
+	vd.priority = yang_get_default_uint8("%s/priority", VRRP_XPATH_FULL);
+	vd.advertisement_interval = yang_get_default_uint16(
+		"%s/advertisement-interval", VRRP_XPATH_FULL);
+	vd.preempt_mode = yang_get_default_bool("%s/preempt", VRRP_XPATH_FULL);
+	vd.accept_mode =
+		yang_get_default_bool("%s/accept-mode", VRRP_XPATH_FULL);
 	vd.shutdown = VRRP_DEFAULT_SHUTDOWN;
 
 	vrrp_autoconfig_version = 3;

@@ -141,6 +141,9 @@ void pim_rp_free(struct pim_instance *pim)
 {
 	if (pim->rp_list)
 		list_delete(&pim->rp_list);
+	if (pim->rp_table)
+		route_table_finish(pim->rp_table);
+	pim->rp_table = NULL;
 }
 
 /*
@@ -240,7 +243,7 @@ struct rp_info *pim_rp_find_match_group(struct pim_instance *pim,
 		flog_err(
 			EC_LIB_DEVELOPMENT,
 			"%s: BUG We should have found default group information\n",
-			__PRETTY_FUNCTION__);
+			__func__);
 		return best;
 	}
 
@@ -248,12 +251,13 @@ struct rp_info *pim_rp_find_match_group(struct pim_instance *pim,
 	if (PIM_DEBUG_PIM_TRACE) {
 		char buf[PREFIX_STRLEN];
 
-		route_unlock_node(rn);
 		zlog_debug("Lookedup: %p for rp_info: %p(%s) Lock: %d", rn,
 			   rp_info,
 			   prefix2str(&rp_info->group, buf, sizeof(buf)),
 			   rn->lock);
 	}
+
+	route_unlock_node(rn);
 
 	if (!best)
 		return rp_info;
@@ -351,8 +355,7 @@ void pim_upstream_update(struct pim_instance *pim, struct pim_upstream *up)
 
 	if (PIM_DEBUG_PIM_TRACE)
 		zlog_debug("%s: pim upstream update for  old upstream %s",
-			   __PRETTY_FUNCTION__,
-			   inet_ntoa(old_upstream_addr));
+			   __func__, inet_ntoa(old_upstream_addr));
 
 	if (old_upstream_addr.s_addr == new_upstream_addr.s_addr)
 		return;
@@ -371,8 +374,9 @@ void pim_upstream_update(struct pim_instance *pim, struct pim_upstream *up)
 			char buf[PREFIX2STR_BUFFER];
 
 			prefix2str(&nht_p, buf, sizeof(buf));
-			zlog_debug("%s: Deregister upstream %s addr %s with Zebra NHT",
-				   __PRETTY_FUNCTION__, up->sg_str, buf);
+			zlog_debug(
+				"%s: Deregister upstream %s addr %s with Zebra NHT",
+				__func__, up->sg_str, buf);
 		}
 		pim_delete_tracked_nexthop(pim, &nht_p, up, NULL, false);
 	}
@@ -384,7 +388,7 @@ void pim_upstream_update(struct pim_instance *pim, struct pim_upstream *up)
 
 	rpf_result = pim_rpf_update(pim, up, &old_rpf, __func__);
 	if (rpf_result == PIM_RPF_FAILURE)
-		pim_mroute_del(up->channel_oil, __PRETTY_FUNCTION__);
+		pim_mroute_del(up->channel_oil, __func__);
 
 	/* update kernel multicast forwarding cache (MFC) */
 	if (up->rpf.source_nexthop.interface && up->channel_oil)
@@ -446,7 +450,6 @@ int pim_rp_new(struct pim_instance *pim, struct in_addr rp_addr,
 	struct prefix nht_p;
 	struct route_node *rn;
 	struct pim_upstream *up;
-	struct listnode *upnode;
 
 	if (rp_addr.s_addr == INADDR_ANY ||
 	    rp_addr.s_addr == INADDR_NONE)
@@ -551,11 +554,10 @@ int pim_rp_new(struct pim_instance *pim, struct in_addr rp_addr,
 				prefix2str(&rp_all->group, buf1, sizeof(buf1));
 				zlog_debug(
 					"%s: NHT Register rp_all addr %s grp %s ",
-					__PRETTY_FUNCTION__, buf, buf1);
+					__func__, buf, buf1);
 			}
 
-			for (ALL_LIST_ELEMENTS_RO(pim->upstream_list, upnode,
-						  up)) {
+			frr_each (rb_pim_upstream, &pim->upstream_head, up) {
 				/* Find (*, G) upstream whose RP is not
 				 * configured yet
 				 */
@@ -650,7 +652,7 @@ int pim_rp_new(struct pim_instance *pim, struct in_addr rp_addr,
 			   rn->lock);
 	}
 
-	for (ALL_LIST_ELEMENTS_RO(pim->upstream_list, upnode, up)) {
+	frr_each (rb_pim_upstream, &pim->upstream_head, up) {
 		if (up->sg.src.s_addr == INADDR_ANY) {
 			struct prefix grp;
 			struct rp_info *trp_info;
@@ -678,7 +680,7 @@ int pim_rp_new(struct pim_instance *pim, struct in_addr rp_addr,
 		prefix2str(&nht_p, buf, sizeof(buf));
 		prefix2str(&rp_info->group, buf1, sizeof(buf1));
 		zlog_debug("%s: NHT Register RP addr %s grp %s with Zebra ",
-			   __PRETTY_FUNCTION__, buf, buf1);
+			   __func__, buf, buf1);
 	}
 	pim_find_or_track_nexthop(pim, &nht_p, NULL, rp_info, false, NULL);
 	if (!pim_ecmp_nexthop_lookup(pim, &rp_info->rp.source_nexthop, &nht_p,
@@ -723,14 +725,13 @@ int pim_rp_del(struct pim_instance *pim, struct in_addr rp_addr,
 	bool was_plist = false;
 	struct rp_info *trp_info;
 	struct pim_upstream *up;
-	struct listnode *upnode;
 	struct bsgrp_node *bsgrp = NULL;
 	struct bsm_rpinfo *bsrp = NULL;
 	char grp_str[PREFIX2STR_BUFFER];
 	char rp_str[INET_ADDRSTRLEN];
 
 	if (!inet_ntop(AF_INET, &rp_addr, rp_str, sizeof(rp_str)))
-		sprintf(rp_str, "<rp?>");
+		snprintf(rp_str, sizeof(rp_str), "<rp?>");
 	prefix2str(&group, grp_str, sizeof(grp_str));
 
 	if (plist)
@@ -747,8 +748,8 @@ int pim_rp_del(struct pim_instance *pim, struct in_addr rp_addr,
 	}
 
 	if (PIM_DEBUG_PIM_TRACE)
-		zlog_debug("%s: Delete RP %s for the group %s",
-			   __PRETTY_FUNCTION__, rp_str, grp_str);
+		zlog_debug("%s: Delete RP %s for the group %s", __func__,
+			   rp_str, grp_str);
 
 	/* While static RP is getting deleted, we need to check if dynamic RP
 	 * present for the same group in BSM RP table, then install the dynamic
@@ -765,11 +766,13 @@ int pim_rp_del(struct pim_instance *pim, struct in_addr rp_addr,
 
 					if (!inet_ntop(AF_INET, bsrp, bsrp_str,
 						       sizeof(bsrp_str)))
-						sprintf(bsrp_str, "<bsrp?>");
+						snprintf(bsrp_str,
+							 sizeof(bsrp_str),
+							 "<bsrp?>");
 
-					zlog_debug("%s: BSM RP %s found for the group %s",
-						   __PRETTY_FUNCTION__,
-						   bsrp_str, grp_str);
+					zlog_debug(
+						"%s: BSM RP %s found for the group %s",
+						__func__, bsrp_str, grp_str);
 				}
 				return pim_rp_change(pim, bsrp->rp_address,
 						     group, RP_SRC_BSR);
@@ -778,7 +781,7 @@ int pim_rp_del(struct pim_instance *pim, struct in_addr rp_addr,
 			if (PIM_DEBUG_PIM_TRACE)
 				zlog_debug(
 					"%s: BSM RP not found for the group %s",
-					__PRETTY_FUNCTION__, grp_str);
+					__func__, grp_str);
 		}
 	}
 
@@ -789,8 +792,8 @@ int pim_rp_del(struct pim_instance *pim, struct in_addr rp_addr,
 	if (PIM_DEBUG_PIM_NHT_RP) {
 		char buf[PREFIX2STR_BUFFER];
 		prefix2str(&nht_p, buf, sizeof(buf));
-		zlog_debug("%s: Deregister RP addr %s with Zebra ",
-			   __PRETTY_FUNCTION__, buf);
+		zlog_debug("%s: Deregister RP addr %s with Zebra ", __func__,
+			   buf);
 	}
 	pim_delete_tracked_nexthop(pim, &nht_p, NULL, rp_info, false);
 
@@ -800,7 +803,7 @@ int pim_rp_del(struct pim_instance *pim, struct in_addr rp_addr,
 	rp_all = pim_rp_find_match_group(pim, &g_all);
 
 	if (rp_all == rp_info) {
-		for (ALL_LIST_ELEMENTS_RO(pim->upstream_list, upnode, up)) {
+		frr_each (rb_pim_upstream, &pim->upstream_head, up) {
 			/* Find the upstream (*, G) whose upstream address is
 			 * same as the deleted RP
 			 */
@@ -839,7 +842,7 @@ int pim_rp_del(struct pim_instance *pim, struct in_addr rp_addr,
 
 				zlog_debug(
 					"%s:Found for Freeing: %p for rp_info: %p(%s) Lock: %d",
-					__PRETTY_FUNCTION__, rn, rp_info,
+					__func__, rn, rp_info,
 					prefix2str(&rp_info->group, buf,
 						   sizeof(buf)),
 					rn->lock);
@@ -852,7 +855,7 @@ int pim_rp_del(struct pim_instance *pim, struct in_addr rp_addr,
 
 	pim_rp_refresh_group_to_rp_mapping(pim);
 
-	for (ALL_LIST_ELEMENTS_RO(pim->upstream_list, upnode, up)) {
+	frr_each (rb_pim_upstream, &pim->upstream_head, up) {
 		/* Find the upstream (*, G) whose upstream address is same as
 		 * the deleted RP
 		 */
@@ -893,7 +896,6 @@ int pim_rp_change(struct pim_instance *pim, struct in_addr new_rp_addr,
 	int result = 0;
 	struct rp_info *rp_info = NULL;
 	struct pim_upstream *up;
-	struct listnode *upnode;
 
 	rn = route_node_lookup(pim->rp_table, &group);
 	if (!rn) {
@@ -928,7 +930,7 @@ int pim_rp_change(struct pim_instance *pim, struct in_addr new_rp_addr,
 
 			prefix2str(&nht_p, buf, sizeof(buf));
 			zlog_debug("%s: Deregister RP addr %s with Zebra ",
-				   __PRETTY_FUNCTION__, buf);
+				   __func__, buf);
 		}
 		pim_delete_tracked_nexthop(pim, &nht_p, NULL, rp_info, false);
 	}
@@ -942,7 +944,7 @@ int pim_rp_change(struct pim_instance *pim, struct in_addr new_rp_addr,
 
 	listnode_add_sort(pim->rp_list, rp_info);
 
-	for (ALL_LIST_ELEMENTS_RO(pim->upstream_list, upnode, up)) {
+	frr_each (rb_pim_upstream, &pim->upstream_head, up) {
 		if (up->sg.src.s_addr == INADDR_ANY) {
 			struct prefix grp;
 			struct rp_info *trp_info;
@@ -966,7 +968,7 @@ int pim_rp_change(struct pim_instance *pim, struct in_addr new_rp_addr,
 		prefix2str(&nht_p, buf, sizeof(buf));
 		prefix2str(&rp_info->group, buf1, sizeof(buf1));
 		zlog_debug("%s: NHT Register RP addr %s grp %s with Zebra ",
-			   __PRETTY_FUNCTION__, buf, buf1);
+			   __func__, buf, buf1);
 	}
 
 	pim_find_or_track_nexthop(pim, &nht_p, NULL, rp_info, false, NULL);
@@ -1150,7 +1152,7 @@ struct pim_rpf *pim_rp_g(struct pim_instance *pim, struct in_addr group)
 			prefix2str(&rp_info->group, buf1, sizeof(buf1));
 			zlog_debug(
 				"%s: NHT Register RP addr %s grp %s with Zebra",
-				__PRETTY_FUNCTION__, buf, buf1);
+				__func__, buf, buf1);
 		}
 		pim_find_or_track_nexthop(pim, &nht_p, NULL, rp_info, false,
 					  NULL);
@@ -1189,7 +1191,7 @@ int pim_rp_set_upstream_addr(struct pim_instance *pim, struct in_addr *up,
 			 && (source.s_addr == INADDR_ANY))) {
 		if (PIM_DEBUG_PIM_NHT_RP)
 			zlog_debug("%s: Received a (*,G) with no RP configured",
-				   __PRETTY_FUNCTION__);
+				   __func__);
 		up->s_addr = INADDR_ANY;
 		return 0;
 	}
@@ -1264,11 +1266,11 @@ void pim_rp_show_information(struct pim_instance *pim, struct vty *vty, bool uj)
 			char buf[48];
 
 			if (rp_info->rp_src == RP_SRC_STATIC)
-				strcpy(source, "Static");
+				strlcpy(source, "Static", sizeof(source));
 			else if (rp_info->rp_src == RP_SRC_BSR)
-				strcpy(source, "BSR");
+				strlcpy(source, "BSR", sizeof(source));
 			else
-				strcpy(source, "None");
+				strlcpy(source, "None", sizeof(source));
 			if (uj) {
 				/*
 				 * If we have moved on to a new RP then add the
@@ -1292,15 +1294,25 @@ void pim_rp_show_information(struct pim_instance *pim, struct vty *vty, bool uj)
 					json_rp_rows = json_object_new_array();
 
 				json_row = json_object_new_object();
+				json_object_string_add(
+					json_row, "rpAddress",
+					inet_ntoa(rp_info->rp.rpf_addr.u
+							  .prefix4));
 				if (rp_info->rp.source_nexthop.interface)
 					json_object_string_add(
 						json_row, "outboundInterface",
 						rp_info->rp.source_nexthop
 							.interface->name);
-
+				else
+					json_object_string_add(
+						json_row, "outboundInterface",
+						"Unknown");
 				if (rp_info->i_am_rp)
 					json_object_boolean_true_add(json_row,
 								     "iAmRP");
+				else
+					json_object_boolean_false_add(json_row,
+								      "iAmRP");
 
 				if (rp_info->plist)
 					json_object_string_add(json_row,
@@ -1398,8 +1410,7 @@ void pim_resolve_rp_nh(struct pim_instance *pim, struct pim_neighbor *nbr)
 					      sizeof(str));
 				zlog_debug(
 					"%s: addr %s new nexthop addr %s interface %s",
-					__PRETTY_FUNCTION__, str, str1,
-					ifp1->name);
+					__func__, str, str1, ifp1->name);
 			}
 		}
 	}

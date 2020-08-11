@@ -22,6 +22,7 @@
 #include <zebra.h>
 
 #include "prefix.h"
+#include "ipaddr.h"
 #include "vty.h"
 #include "sockunion.h"
 #include "memory.h"
@@ -56,10 +57,29 @@ int is_zero_mac(const struct ethaddr *mac)
 	return 1;
 }
 
-unsigned int prefix_bit(const uint8_t *prefix, const uint16_t prefixlen)
+bool is_bcast_mac(const struct ethaddr *mac)
 {
-	unsigned int offset = prefixlen / 8;
-	unsigned int shift = 7 - (prefixlen % 8);
+	int i = 0;
+
+	for (i = 0; i < ETH_ALEN; i++)
+		if (mac->octet[i] != 0xFF)
+			return false;
+
+	return true;
+}
+
+bool is_mcast_mac(const struct ethaddr *mac)
+{
+	if ((mac->octet[0] & 0x01) == 0x01)
+		return true;
+
+	return false;
+}
+
+unsigned int prefix_bit(const uint8_t *prefix, const uint16_t bit_index)
+{
+	unsigned int offset = bit_index / 8;
+	unsigned int shift = 7 - (bit_index % 8);
 
 	return (prefix[offset] >> shift) & 1;
 }
@@ -659,7 +679,7 @@ void apply_mask_ipv4(struct prefix_ipv4 *p)
 /* If prefix is 0.0.0.0/0 then return 1 else return 0. */
 int prefix_ipv4_any(const struct prefix_ipv4 *p)
 {
-	return (p->prefix.s_addr == 0 && p->prefixlen == 0);
+	return (p->prefix.s_addr == INADDR_ANY && p->prefixlen == 0);
 }
 
 /* Allocate a new ip version 6 route */
@@ -839,13 +859,10 @@ int prefix_blen(const struct prefix *p)
 	switch (p->family) {
 	case AF_INET:
 		return IPV4_MAX_BYTELEN;
-		break;
 	case AF_INET6:
 		return IPV6_MAX_BYTELEN;
-		break;
 	case AF_ETHERNET:
 		return ETH_ALEN;
-		break;
 	}
 	return 0;
 }
@@ -950,7 +967,7 @@ static const char *prefixevpn_prefix2str(const struct prefix_evpn *p, char *str,
 	family = is_evpn_prefix_ipaddr_v4(p)
 			 ? AF_INET
 			 : AF_INET6;
-	snprintf(str, size, "[%d]:[%u][%s/%d]/%d",
+	snprintf(str, size, "[%d]:[%u]:[%s/%d]/%d",
 		 p->prefix.route_type,
 		 p->prefix.prefix_addr.eth_tag,
 		 inet_ntop(family,
@@ -1066,7 +1083,7 @@ struct prefix *prefix_new(void)
 {
 	struct prefix *p;
 
-	p = XCALLOC(MTYPE_PREFIX, sizeof *p);
+	p = XCALLOC(MTYPE_PREFIX, sizeof(*p));
 	return p;
 }
 
@@ -1081,7 +1098,6 @@ void prefix_free_lists(void *arg)
 void prefix_free(struct prefix **p)
 {
 	XFREE(MTYPE_PREFIX, *p);
-	*p = NULL;
 }
 
 /* Utility function to convert ipv4 prefixes to Classful prefixes */
@@ -1113,11 +1129,11 @@ in_addr_t ipv4_broadcast_addr(in_addr_t hostaddr, int masklen)
 
 	masklen2ip(masklen, &mask);
 	return (masklen != IPV4_MAX_PREFIXLEN - 1) ?
-						   /* normal case */
-		       (hostaddr | ~mask.s_addr)
-						   :
-						   /* special case for /31 */
-		       (hostaddr ^ ~mask.s_addr);
+		/* normal case */
+		(hostaddr | ~mask.s_addr)
+		   :
+		/* For prefix 31 return 255.255.255.255 (RFC3021) */
+		htonl(0xFFFFFFFF);
 }
 
 /* Utility function to convert ipv4 netmask to prefixes
@@ -1145,7 +1161,7 @@ int netmask_str2prefix_str(const char *net_str, const char *mask_str,
 	} else {
 		destination = ntohl(network.s_addr);
 
-		if (network.s_addr == 0)
+		if (network.s_addr == INADDR_ANY)
 			prefixlen = 0;
 		else if (IN_CLASSC(destination))
 			prefixlen = 24;
@@ -1299,6 +1315,26 @@ char *esi_to_str(const esi_t *esi, char *buf, int size)
 		 esi->val[6], esi->val[7], esi->val[8],
 		 esi->val[9]);
 	return ptr;
+}
+
+printfrr_ext_autoreg_p("EA", printfrr_ea)
+static ssize_t printfrr_ea(char *buf, size_t bsz, const char *fmt,
+			   int prec, const void *ptr)
+{
+	const struct ethaddr *mac = ptr;
+
+	prefix_mac2str(mac, buf, bsz);
+	return 2;
+}
+
+printfrr_ext_autoreg_p("IA", printfrr_ia)
+static ssize_t printfrr_ia(char *buf, size_t bsz, const char *fmt,
+			   int prec, const void *ptr)
+{
+	const struct ipaddr *ipa = ptr;
+
+	ipaddr2str(ipa, buf, bsz);
+	return 2;
 }
 
 printfrr_ext_autoreg_p("I4", printfrr_i4)
